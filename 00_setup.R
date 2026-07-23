@@ -23,24 +23,12 @@ prep_df <- read_sav(file = "data/FEP-PrEP-Roma.sav")
 # 2. Recode sociodemographic / clinical variables
 # -----------------------------------------------------------------------------
 prep_df_mod <- prep_df %>%
-  mutate(gender = as.factor(GENDER)) %>%
-  mutate(
-    age                            = ETA,
-    race                           = as.factor(ETNIA),
-    religion                       = as.factor(Regione_Nascita),
-    ses                            = as.factor(STATOCIV),
-    housing_condition              = as.factor(DOMICIL),
-    school_years                   = ANNISCOL,
-    occupation                     = as.factor(Occupazione),
-    referral                       = as.factor(INVIO),
-    previous_psychiatrist_contact  = as.factor(PRE_CONTATTO),
-    previous_suicide_attempt       = as.factor(PRE_TS),
-    diagnosis_t0                   = as.factor(T0_DIAGNOSI),
-    dui                            = DUI,
-    substance_abuse                = as.factor(ABUSO_Sostanze),
-    antipsychotics_t0              = as.factor(ANTIPSIC1)
-  ) %>%
-  mutate(across(c(ANTIDEP1, ANTIDEP2, STABILIZ1, STABILIZ2, BENZO), ~ as.factor(.x)))
+mutate(across(
+  c(GENDER, ETNIA, T0_DIAGNOSI,
+    ANTIPSIC1, ANTIDEP1, ANTIDEP2,
+    STABILIZ1, STABILIZ2, BENZO),
+  ~ as.factor(.x)
+))
 
 # -----------------------------------------------------------------------------
 # 3. PANSS five-factor model (van der Gaag) at T0, T1, T2 via rowSums

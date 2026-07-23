@@ -1,0 +1,175 @@
+# =============================================================================
+# 04_community_spinglass.R
+# Community analysis of the temporal (beta) network. The directed temporal
+# matrix is collapsed to an undirected weighted graph; Spinglass is run per
+# connected component over 1000 seeds; a node x node co-occurrence matrix is
+# built and displayed as a hierarchically ordered heatmap.
+#
+# Requires data/residuals.csv (produced by 01_preprocessing_covariates.R).
+# =============================================================================
+
+library(tidyverse)
+library(psychonetrics)
+library(igraph)
+library(reshape2)
+library(ggplot2)
+
+clean_labels <- function(x) {
+  x <- gsub("^PANSS_", "", x)
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+
+# -----------------------------------------------------------------------------
+# 1. Load data and build the design matrix
+# -----------------------------------------------------------------------------
+data <- read_csv("data/residuals.csv") %>%
+  dplyr::select(contains(c("PANSS", "HONOS"))) %>%
+  as_tibble()
+
+all_names <- colnames(data)
+nodes     <- all_names[!grepl("^T[0-9]", all_names)]
+waves     <- c("", "T1", "T2")
+
+design_mat <- sapply(
+  waves,
+  function(w) if (w == "") nodes else paste0(w, nodes)
+)
+rownames(design_mat) <- nodes
+
+labelsAbb <- clean_labels(nodes)   # cleaned node labels
+
+# -----------------------------------------------------------------------------
+# 2. Estimate model and prune
+#    NOTE: pruning here (alpha = 0.05, recursive) differs from
+#    02_panel_gvar_network.R (alpha = 0.5, FDR). Reconcile if required.
+# -----------------------------------------------------------------------------
+model <- dlvm1(
+  data = data, vars = design_mat, estimator = "FIML",
+  within_latent = "ggm", between_latent = "chol"
+)
+
+set.seed(1234)
+model_fit    <- runmodel(model)
+model_pruned <- model_fit %>% prune(alpha = 0.5, recursive = TRUE)
+
+# -----------------------------------------------------------------------------
+# 3. Temporal matrix -> undirected weighted graph
+# -----------------------------------------------------------------------------
+features_temporal <- getmatrix(model_pruned, "beta")
+diag(features_temporal) <- 0
+dimnames(features_temporal) <- list(labelsAbb, labelsAbb)
+
+g_directed <- graph_from_adjacency_matrix(
+  features_temporal, mode = "directed", weighted = TRUE, diag = FALSE
+)
+g_undirected <- as_undirected(
+  g_directed, mode = "collapse", edge.attr.comb = list(weight = "mean")
+)
+g_undirected <- delete_edges(g_undirected, E(g_undirected)[weight == 0])
+
+vcount(g_undirected)
+V(g_undirected)$name
+components(g_undirected)$membership
+
+# -----------------------------------------------------------------------------
+# 4. Spinglass per connected component
+# -----------------------------------------------------------------------------
+run_spinglass_components <- function(graph, spins = 6, seed = 1) {
+  set.seed(seed)
+  comp              <- components(graph)
+  membership_global <- rep(NA, vcount(graph))
+  current_comm      <- 1
+
+  for (c in unique(comp$membership)) {
+    node_ids <- which(comp$membership == c)
+
+    if (length(node_ids) == 1) {
+      membership_global[node_ids] <- current_comm
+      current_comm <- current_comm + 1
+    } else {
+      subg <- induced_subgraph(graph, vids = node_ids)
+      if (ecount(subg) == 0) {
+        for (n in node_ids) {
+          membership_global[n] <- current_comm
+          current_comm <- current_comm + 1
+        }
+      } else {
+        comm <- cluster_spinglass(
+          subg, spins = spins, implementation = "neg", weights = E(subg)$weight
+        )
+        sub_membership <- membership(comm)
+        for (m in unique(sub_membership)) {
+          membership_global[node_ids[sub_membership == m]] <- current_comm
+          current_comm <- current_comm + 1
+        }
+      }
+    }
+  }
+  membership_global
+}
+
+# -----------------------------------------------------------------------------
+# 5. Run 1000 iterations
+# -----------------------------------------------------------------------------
+n_iter  <- 1000
+n_nodes <- length(labelsAbb)
+
+spin_memberships <- matrix(NA, nrow = n_iter, ncol = n_nodes)
+colnames(spin_memberships) <- labelsAbb
+
+for (i in 1:n_iter) {
+  spin_memberships[i, ] <- run_spinglass_components(g_undirected, spins = 6, seed = i)
+}
+
+# -----------------------------------------------------------------------------
+# 6. Co-occurrence matrix (proportion of iterations in the same community)
+# -----------------------------------------------------------------------------
+co_occ_matrix <- matrix(0, n_nodes, n_nodes)
+for (r in 1:n_iter) {
+  memb <- spin_memberships[r, ]
+  for (i in 1:n_nodes) {
+    for (j in 1:n_nodes) {
+      if (memb[i] == memb[j]) co_occ_matrix[i, j] <- co_occ_matrix[i, j] + 1
+    }
+  }
+}
+co_occ_matrix <- co_occ_matrix / n_iter
+dimnames(co_occ_matrix) <- list(labelsAbb, labelsAbb)
+
+# -----------------------------------------------------------------------------
+# 7. Heatmap (hierarchically ordered)
+# -----------------------------------------------------------------------------
+hc         <- hclust(as.dist(1 - co_occ_matrix))
+node_order <- order.dendrogram(as.dendrogram(hc))
+
+reordered_co_occ_matrix <- co_occ_matrix[node_order, node_order]
+diag(reordered_co_occ_matrix) <- NA
+
+long_co_occ_matrix <- melt(reordered_co_occ_matrix)
+long_co_occ_matrix$value <- as.numeric(long_co_occ_matrix$value)
+
+community_heatmap <- ggplot(long_co_occ_matrix, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  coord_fixed() +
+  scale_fill_distiller(
+    name = "Co-occurrence", palette = "Blues", direction = 1,
+    limits = c(0, 1), na.value = "white"
+  ) +
+  theme_minimal() +
+  xlab("Node") + ylab("Node") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.text.y = element_text(size = 10)
+  ) +
+  ggtitle("Community co-occurrence heatmap")
+
+print(community_heatmap)
+
+# -----------------------------------------------------------------------------
+# 8. Save
+# -----------------------------------------------------------------------------
+if (!dir.exists("results")) dir.create("results")
+write.csv(co_occ_matrix, "results/community_co_occurrence_matrix.csv")
+ggsave("results/community_co_occurrence_heatmap.png", community_heatmap,
+       width = 8, height = 7, dpi = 300)

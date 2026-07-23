@@ -53,7 +53,7 @@ model <- dlvm1(
 set.seed(1234)
 
 model_sat    <- model %>% runmodel()
-model_pruned <- model_sat %>% prune(alpha = 0.5, adjust = "fdr")
+model_pruned <- model_sat %>% prune(alpha = 0.05, adjust = "none")
 # NOTE: pruning alpha here (0.5, FDR) differs from 04_community_spinglass.R
 # (0.05, recursive). Keep consistent with the manuscript / reconcile if needed.
 
